@@ -143,6 +143,56 @@ def save_avatar_blob(avatar_uri, blob):
     return avatar_path
 
 
+def download_avatar(url, provider, social_id):
+    """Download a social profile picture and return its avatar_uri.
+
+    Falls back to the default "empty.jpg" when the picture cannot be fetched
+    or saved, so a broken avatar never blocks registration.
+    """
+    avatar_uri = generate_avatar_uri()
+    try:
+        r = requests.get(url, allow_redirects=True, timeout=10)
+        r.raise_for_status()
+        save_avatar_blob(avatar_uri, r.content)
+        return avatar_uri
+    except requests.RequestException as e:
+        logger.error(
+            f"Failed to download avatar from {provider} for user {social_id}: {e}"
+        )
+    except (IOError, PermissionError) as e:
+        logger.error(f"Failed to save avatar file for user {social_id}: {e}")
+    return "empty.jpg"
+
+
+# https://yandex.ru/dev/id/doc/ru/user-information
+YANDEX_AVATAR_URL = "https://avatars.yandex.net/get-yapic/{avatar_id}/islands-200"
+
+
+def yandex_avatar_url(id_info):
+    """Profile picture URL from a login.yandex.ru/info response, if the user has one.
+
+    default_avatar_id is only returned when the OAuth app has the "user's
+    profile picture" permission; is_avatar_empty marks Yandex's placeholder.
+    """
+    avatar_id = id_info.get("default_avatar_id")
+    if not avatar_id or id_info.get("is_avatar_empty"):
+        return None
+    return YANDEX_AVATAR_URL.format(avatar_id=avatar_id)
+
+
+def create_example_network(user):
+    """Give a newly registered user the switch-and-hub example network."""
+    n = Network(
+        author_id=user.id,
+        network=make_example_net_switch_and_hub(),
+        title="Свитч и хаб (пример сети)",
+        guid=str(uuid.uuid4()),
+        preview_uri="switch_and_hub.png",
+    )
+    db.session.add(n)
+    db.session.commit()
+
+
 # oauthlib needs this to allow plain-http redirects on the local test stand.
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
@@ -581,20 +631,7 @@ def vk_callback():
 
             photo_uri = vk_user.get("response", [{}])[0].get("photo_100")
             if photo_uri:
-                generated_avatar_uri = generate_avatar_uri()
-                try:
-                    r = requests.get(photo_uri, allow_redirects=True, timeout=10)
-                    r.raise_for_status()
-                    save_avatar_blob(generated_avatar_uri, r.content)
-                    avatar_uri = generated_avatar_uri
-                except requests.RequestException as e:
-                    logger.error(
-                        f"Failed to download avatar from VK for user {vk_id}: {e}"
-                    )
-                    avatar_uri = "empty.jpg"
-                except (IOError, PermissionError) as e:
-                    logger.error(f"Failed to save avatar file for user {vk_id}: {e}")
-                    avatar_uri = "empty.jpg"
+                avatar_uri = download_avatar(photo_uri, "VK", vk_id)
 
             new_user = User(
                 nick=vk_user["response"][0]["first_name"]
@@ -628,16 +665,7 @@ def vk_callback():
     print(f"access_token: {access_token}; refresh_token: {refresh_token}")
 
     if user_is_new:
-        u = uuid.uuid4()
-        n = Network(
-            author_id=user.id,
-            network=make_example_net_switch_and_hub(),
-            title="Свитч и хаб (пример сети)",
-            guid=str(u),
-            preview_uri="switch_and_hub.png",
-        )
-        db.session.add(n)
-        db.session.commit()
+        create_example_network(user)
 
     return response
 
@@ -691,10 +719,16 @@ def yandex_callback(yandex_json=yandex_json):
 
         if user is None:
             try:
+                avatar_url = yandex_avatar_url(id_info)
                 new_user = User(
                     nick=id_info.get("login", ""),
                     yandex_id=yandex_id,
                     email=id_info.get("default_email", ""),
+                    avatar_uri=(
+                        download_avatar(avatar_url, "Yandex", yandex_id)
+                        if avatar_url
+                        else "empty.jpg"
+                    ),
                 )
                 db.session.add(new_user)
                 db.session.commit()
@@ -707,6 +741,7 @@ def yandex_callback(yandex_json=yandex_json):
                 return redirect(url_for("login_index"))
 
             user = User.query.filter_by(yandex_id=yandex_id).first()
+            create_example_network(user)
 
         login_user(user, remember=True)
         access_token = create_access_token(identity=str(user.id))
