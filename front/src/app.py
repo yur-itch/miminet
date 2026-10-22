@@ -201,6 +201,9 @@ PUBLIC_CONFIG_KEYS = [
     "EXTERNAL_BASE_URL",
 ]
 
+# Fail fast instead of hanging ~130 s (OS TCP timeout) when the DB is unreachable.
+DB_CONNECT_TIMEOUT = 5
+
 
 def get_database_uri(mode):
     """
@@ -218,7 +221,7 @@ def get_database_uri(mode):
         POSTGRES_USER = os.getenv("POSTGRES_DEFAULT_USER")
         POSTGRES_PASSWORD = os.getenv("POSTGRES_DEFAULT_PASSWORD")
         POSTGRES_DB_NAME = os.getenv("POSTGRES_DATABASE_NAME")
-        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB_NAME}"
+        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB_NAME}?connect_timeout={DB_CONNECT_TIMEOUT}"
 
         print(f"[DB] Using local PostgreSQL: {POSTGRES_HOST}/{POSTGRES_DB_NAME}")
         return POSTGRES_URL
@@ -239,7 +242,7 @@ def get_database_uri(mode):
                 "Missing Yandex Cloud PostgreSQL credentials in environment variables"
             )
 
-        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}?sslmode={POSTGRES_SSLMODE}&sslrootcert={POSTGRES_SSLROOTCERT}"
+        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}?sslmode={POSTGRES_SSLMODE}&sslrootcert={POSTGRES_SSLROOTCERT}&connect_timeout={DB_CONNECT_TIMEOUT}"
 
         print(
             f"[DB] Using Yandex Cloud PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}"
@@ -256,6 +259,11 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("SQLALCHEMY_DATABASE_URI") or 
     get_database_uri(MODE)
 )
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = True
+# Replace pooled connections closed by pgbouncer/PG instead of failing with 500.
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
 app.config["SECRET_KEY"] = SECRET_KEY
 app.config["SESSION_COOKIE_NAME"] = "mimi_session"
 

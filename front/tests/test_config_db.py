@@ -17,6 +17,7 @@ class TestConfigDB:
         assert "postgresql+psycopg2://" in uri
         assert "@localhost/" in uri
         assert "sslmode" not in uri
+        assert uri.endswith("/miminet_dev?connect_timeout=5")
 
     def test_get_database_uri_prod(self, mock_env_prod):
         """Verify URI format and SSL parameters for Production environment."""
@@ -25,6 +26,15 @@ class TestConfigDB:
         assert "rc1a-test" in uri
         assert "sslmode=verify-full" in uri
         assert "sslrootcert=/tmp/root.crt" in uri
+        assert "&connect_timeout=5" in uri
+
+    def test_engine_recovers_dropped_connections(self):
+        """Pooled connections closed by the server must be replaced, not reused (#411)."""
+        from app import app as flask_app
+
+        options = flask_app.config["SQLALCHEMY_ENGINE_OPTIONS"]
+        assert options["pool_pre_ping"] is True
+        assert options["pool_recycle"] > 0
 
     def test_get_database_uri_prod_missing_creds(self, mock_env_prod, monkeypatch):
         """Verify Fail Fast behavior when credentials are missing in Prod."""
