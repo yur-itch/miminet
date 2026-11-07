@@ -1,0 +1,198 @@
+From 81447667719a4244f4429e8bd1195ead3cf91cd3 Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:14:09 +0900
+Subject: [PATCH] fix(quiz): keep author on admin-created tests and answers
+ (#542)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TestView and AnswerView left the created_by_user relation in their create
+forms. flask-admin's populate_obj writes the blank field to the model and,
+on flush, SQLAlchemy syncs the NULL relation over the created_by_id set in
+on_model_change, so every Test/Answer created through the admin had no
+author. created_by_formatter then raised for those rows and /admin/test/
+and /admin/answer/ answered 500.
+
+- exclude created_by_id/created_by_user from both forms (as SectionView and
+  QuestionView already do);
+- created_by_formatter renders '—' and logs a warning instead of raising,
+  so rows already stored without an author no longer break the list pages.
+
+Verified on a local stand (Flask-Admin 2.0.1, PostgreSQL 18): before - author
+NULL and 500 on both list pages; after - author set, lists render.
+Adds browser-free test_admin_author.py (registered in front_coverage.yml).
+---
+ .github/workflows/front_coverage.yml |  1 +
+ front/src/miminet_admin.py           | 25 +++++++++++-
+ front/tests/test_admin_author.py     | 61 ++++++++++++++++++++++++++++
+ 3 files changed, 85 insertions(+), 2 deletions(-)
+
+diff --git a/.github/workflows/front_coverage.yml b/.github/workflows/front_coverage.yml
+index b52f728..537067a 100644
+--- a/.github/workflows/front_coverage.yml
++++ b/.github/workflows/front_coverage.yml
+@@ -36,10 +36,11 @@ jobs:
+             test_config_db.py
+             test_quiz_progress.py
+             test_ai_generate.py
+             test_jwt_cookies.py
+             test_textbox_emulation.py
++            test_admin_author.py
+           )
+           [ "${#files[@]}" -gt 0 ] || { echo "ERROR: empty browser-free file list" >&2; exit 1; }
+           printf 'Browser-free files: %s\n' "${files[@]}"
+           # Raw coverage CLI (not pytest-cov), matching the back_test.yml
+           # pattern. --source=../src maps to front/src; --data-file is cwd-
+diff --git a/front/src/miminet_admin.py b/front/src/miminet_admin.py
+index 67f4de0..4216285 100644
+--- a/front/src/miminet_admin.py
++++ b/front/src/miminet_admin.py
+@@ -1,6 +1,7 @@
+ import json
++import logging
+ from datetime import date
+ 
+ from flask import flash, redirect, request, url_for
+ from flask_admin import AdminIndexView, expose
+ from flask_admin.actions import action
+@@ -50,10 +51,12 @@ from quiz.entity.entity import (
+     QuizSession,
+     SessionQuestion,
+ )
+ from quiz.util.dto import calculate_question_count
+ 
++logger = logging.getLogger(__name__)
++
+ ADMIN_ROLE_LEVEL = 1
+ 
+ 
+ def _pluralize_ru(value, forms):
+     remainder_hundred = value % 100
+@@ -371,14 +374,21 @@ class MiminetAdminModelView(ModelView):
+ 
+     column_type_formatters = MY_DEFAULT_FORMATTERS
+ 
+ 
+ def created_by_formatter(view, context, model, name, **kwargs):
+-    user = User.query.get(model.created_by_id)
++    user = User.query.get(model.created_by_id) if model.created_by_id else None
+     if user and user.nick:
+         return user.nick
+-    raise Exception("Error occurred while retrieving user nickname")
++    # A single row without an author must not take the whole list page down.
++    logger.warning(
++        "%s id=%s has no author nickname (created_by_id=%s)",
++        type(model).__name__,
++        getattr(model, "id", None),
++        model.created_by_id,
++    )
++    return "—"
+ 
+ 
+ class TestView(MiminetAdminModelView):
+     column_list = (
+         "name",
+@@ -399,10 +409,16 @@ class TestView(MiminetAdminModelView):
+         "created_by_id": "Автор",
+     }
+ 
+     column_formatters = {"created_by_id": created_by_formatter}
+ 
++    # A blank author field in the form would overwrite created_by_id with NULL.
++    form_excluded_columns = MiminetAdminModelView.form_excluded_columns + [
++        "created_by_id",
++        "created_by_user",
++    ]
++
+     pass
+ 
+ 
+ def get_test_name(view, context, model, name, **kwargs):
+     test = Test.query.get(model.test_id)
+@@ -645,10 +661,15 @@ class AnswerView(MiminetAdminModelView):
+     column_formatters = {
+         "question_id": get_question_text,
+         "created_by_id": created_by_formatter,
+     }
+ 
++    form_excluded_columns = MiminetAdminModelView.form_excluded_columns + [
++        "created_by_id",
++        "created_by_user",
++    ]
++
+     form_extra_fields = {
+         "question_id": QuerySelectField(
+             "Вопрос",
+             query_factory=lambda: Question.query.all(),
+             get_pk=lambda question: question.id,
+diff --git a/front/tests/test_admin_author.py b/front/tests/test_admin_author.py
+new file mode 100644
+index 0000000..66dccae
+--- /dev/null
++++ b/front/tests/test_admin_author.py
+@@ -0,0 +1,61 @@
++"""Regression tests for admin records losing their author (issue #542).
++
++A blank ``created_by_user`` relation field in a flask-admin create form is
++written to the model by ``populate_obj`` and, on flush, overwrites the
++``created_by_id`` set in ``on_model_change`` with NULL. ``created_by_formatter``
++then raised for such rows and the whole list page answered 500.
++"""
++
++from types import SimpleNamespace
++
++import pytest
++
++from app import app as flask_app
++from miminet_admin import AnswerView, created_by_formatter
++from miminet_admin import TestView as AdminTestView
++from miminet_model import db
++from quiz.entity.entity import Answer
++from quiz.entity.entity import Test as QuizTest
++
++
++@pytest.mark.parametrize(
++    "view_cls, model",
++    [(AdminTestView, QuizTest), (AnswerView, Answer)],
++    ids=["test", "answer"],
++)
++def test_author_fields_are_not_in_create_form(view_cls, model):
++    with flask_app.app_context():
++        form_cls = view_cls(
++            model, db.session, endpoint=f"t542_{model.__name__}"
++        ).get_create_form()
++
++    assert not hasattr(form_cls, "created_by_user")
++    assert not hasattr(form_cls, "created_by_id")
++
++
++def test_created_by_formatter_returns_nick(mocker):
++    user_model = mocker.patch("miminet_admin.User")
++    user_model.query.get.return_value = SimpleNamespace(nick="teacher")
++
++    row = SimpleNamespace(id=1, created_by_id=7)
++
++    assert created_by_formatter(None, None, row, "created_by_id") == "teacher"
++    user_model.query.get.assert_called_once_with(7)
++
++
++def test_created_by_formatter_tolerates_missing_author(mocker):
++    user_model = mocker.patch("miminet_admin.User")
++
++    row = SimpleNamespace(id=1, created_by_id=None)
++
++    assert created_by_formatter(None, None, row, "created_by_id") == "—"
++    user_model.query.get.assert_not_called()
++
++
++def test_created_by_formatter_tolerates_deleted_user(mocker):
++    user_model = mocker.patch("miminet_admin.User")
++    user_model.query.get.return_value = None
++
++    row = SimpleNamespace(id=1, created_by_id=42)
++
++    assert created_by_formatter(None, None, row, "created_by_id") == "—"
+-- 
+2.41.0.windows.1
+

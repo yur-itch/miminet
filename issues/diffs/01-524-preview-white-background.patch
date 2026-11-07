@@ -1,0 +1,34 @@
+From 774f18c17cd92fc9a237d025e6e61ee4855cb4ae Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:05:09 +0900
+Subject: [PATCH] fix(front): render network preview on white background (#524)
+
+cy.png() defaults to a transparent background, so the og:image preview of a
+network shows devices on gray in messengers and social link previews.
+Pass bg: '#ffffff' (the scheme canvas is bg-white). Existing previews are
+refreshed the next time a network is edited.
+---
+ front/src/static/netfront_f.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/front/src/static/netfront_f.js b/front/src/static/netfront_f.js
+index 7031e42..e76070e 100644
+--- a/front/src/static/netfront_f.js
++++ b/front/src/static/netfront_f.js
+@@ -3086,11 +3086,12 @@ const TakeGraphPictureAndUpdate = function()
+     if (!global_cy)
+     {
+         return;
+     }
+ 
+-    let png_blob = global_cy.png({output: 'blob', maxWidth: 512, maxHeight: 512});
++    // Without bg the PNG is transparent and link previews render it on gray.
++    let png_blob = global_cy.png({output: 'blob', maxWidth: 512, maxHeight: 512, bg: '#ffffff'});
+ 
+     ajaxWithAuth({
+         type: 'POST',
+         url: ExternalUrlFor('/network/upload_network_picture?guid=' + network_guid),
+         data: png_blob,
+-- 
+2.41.0.windows.1
+

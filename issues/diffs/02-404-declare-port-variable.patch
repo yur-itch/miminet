@@ -1,0 +1,52 @@
+From 5e818565200cf5f20f5c5784ded7230246f15779 Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:06:14 +0900
+Subject: [PATCH] fix(front): declare port in switch and hub port uid helpers
+ (#404)
+
+l2SwitchPortUid and l1HubPortUid assigned to an undeclared 'port', creating
+an implicit global. When the page already has a global lexical 'port'
+binding (e.g. a script injected by a browser extension), the assignment
+throws 'TypeError: Assignment to constant variable' and AddEdge aborts
+halfway: the edge and the host interface are pushed, the switch/hub port is
+not. That is why host-to-switch/hub links fail only in some browsers.
+
+Reproduced on a local stand by pre-declaring 'const port' before page
+scripts; with 'let' the links are created normally.
+---
+ front/src/static/netfront_f.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/front/src/static/netfront_f.js b/front/src/static/netfront_f.js
+index 7031e42..82bcfed 100644
+--- a/front/src/static/netfront_f.js
++++ b/front/src/static/netfront_f.js
+@@ -611,11 +611,11 @@ const l2SwitchPortUid = function(switch_id){
+     {
+         return -1;
+     }
+ 
+     for (let port_number = 1; port_number < 128; port_number++) {
+-        port = t.data.id + "_" + port_number;
++        let port = t.data.id + "_" + port_number;
+ 
+         let i = t.interface.find(i => i.id === port);
+ 
+         if (!i){
+             return port;
+@@ -631,11 +631,11 @@ const l1HubPortUid = function(hub_id){
+     {
+         return -1;
+     }
+ 
+     for (let port_number = 1; port_number < 128; port_number++) {
+-        port = t.data.id + "_" + port_number;
++        let port = t.data.id + "_" + port_number;
+ 
+         let i = t.interface.find(i => i.id === port);
+ 
+         if (!i){
+             return port;
+-- 
+2.41.0.windows.1
+

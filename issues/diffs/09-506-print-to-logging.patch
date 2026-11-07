@@ -1,0 +1,345 @@
+From 645d75206b037636421820ecabbc011496de2c5f Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:09:50 +0900
+Subject: [PATCH] refactor: replace print with logging (#506)
+
+Route the remaining diagnostic print() calls in front/src and back/src
+through module loggers (logging.getLogger(__name__)) with a level that
+matches the message: init_db/ensure_db_exists progress, DB selection,
+missing SECRET_KEY_FILE, test user errors, VK registration DB error, pcap
+dir creation and unknown node types in the backend topology.
+
+Also drops the print of freshly issued JWT tokens in vk_callback (same
+change as fix/506-stop-printing-jwt-tokens-front, so the branches merge
+cleanly in any order).
+
+Logging is already configured via logging.basicConfig(level=INFO) in
+miminet_auth, which app.py imports before any of these run, so the
+messages stay visible in 'python3 app.py' output and under uwsgi.
+pcap_parser.py keeps its print(..., file=file): it writes a file, not a log.
+---
+ back/src/network_topology.py |  5 ++++-
+ front/src/app.py             |  9 ++++++---
+ front/src/miminet_auth.py    |  9 +++------
+ front/src/miminet_config.py  |  5 ++++-
+ front/src/miminet_model.py   | 29 +++++++++++++++++------------
+ front/src/tasks.py           |  2 +-
+ 6 files changed, 35 insertions(+), 24 deletions(-)
+
+diff --git a/back/src/network_topology.py b/back/src/network_topology.py
+index d807ce6..7818587 100644
+--- a/back/src/network_topology.py
++++ b/back/src/network_topology.py
+@@ -1,5 +1,6 @@
++import logging
+ from typing import List
+ 
+ from ipmininet.ipnet import IPNet
+ from ipmininet.ipovs_switch import IPOVSSwitch
+ from ipmininet.ipswitch import IPSwitch
+@@ -7,10 +8,12 @@ from ipmininet.iptopo import IPTopo
+ from ipmininet.router.config import RouterConfig
+ from network_schema import Network, Node, NodeConfig, NodeInterface
+ from pkt_parser import is_ipv4_address
+ from node_types import NodeType
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ def stp_enabled(config: NodeConfig) -> bool:
+     """Return True when STP or RSTP is enabled for the switch config."""
+     return config.stp in (1, 2)
+ 
+@@ -63,11 +66,11 @@ class MiminetTopology(IPTopo):
+         elif node_type == NodeType.ROUTER:
+             self.__handle_router(node_id, config)
+         elif node_type == NodeType.HACKER:
+             self.__handle_host_hacker(node_id, config)
+         else:
+-            print(f"Unknown node type: {node_type}")
++            logger.warning(f"Unknown node type: {node_type}")
+             return
+ 
+     def __handle_l2_switch(self, node_id: str, config: NodeConfig):
+         assert config.stp in (0, 1, 2), "Incorrect STP mode"
+         is_stp_enabled = config.stp == 1  # Check switch mode
+diff --git a/front/src/app.py b/front/src/app.py
+index 735b5d9..0095308 100644
+--- a/front/src/app.py
++++ b/front/src/app.py
+@@ -1,5 +1,6 @@
++import logging
+ import os
+ import sys
+ from datetime import datetime, timedelta
+ from urllib.parse import urlencode, urljoin, urlparse, urlunparse
+ 
+@@ -120,10 +121,12 @@ from quiz.entity.entity import (
+     Section,
+     SessionQuestion,
+     Test,
+ )
+ 
++logger = logging.getLogger(__name__)
++
+ app = Flask(
+     __name__, static_url_path="", static_folder="static", template_folder="templates"
+ )
+ 
+ BASE_DOMAIN = os.environ.get("BASE_DOMAIN", None)
+@@ -158,11 +161,11 @@ app.config.update(
+ allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", "")
+ allowed_hosts = []
+ if allowed_hosts_env:
+     allowed_hosts = [item.strip() for item in allowed_hosts_env.split(",")]
+ 
+-print(f"Allowed Origins: {allowed_hosts}")
++logger.info(f"Allowed Origins: {allowed_hosts}")
+ CORS(
+     app,
+     resources={
+         r"/*": {
+             "origins": allowed_hosts,
+@@ -218,11 +221,11 @@ def get_database_uri(mode):
+         POSTGRES_USER = os.getenv("POSTGRES_DEFAULT_USER")
+         POSTGRES_PASSWORD = os.getenv("POSTGRES_DEFAULT_PASSWORD")
+         POSTGRES_DB_NAME = os.getenv("POSTGRES_DATABASE_NAME")
+         POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB_NAME}"
+ 
+-        print(f"[DB] Using local PostgreSQL: {POSTGRES_HOST}/{POSTGRES_DB_NAME}")
++        logger.info(f"[DB] Using local PostgreSQL: {POSTGRES_HOST}/{POSTGRES_DB_NAME}")
+         return POSTGRES_URL
+     elif mode == "prod":
+         # Yandex Cloud PostgreSQL для продакшена
+         POSTGRES_HOST = os.getenv("YANDEX_POSTGRES_HOST")
+         POSTGRES_PORT = os.getenv("YANDEX_POSTGRES_PORT", "6432")
+@@ -239,11 +242,11 @@ def get_database_uri(mode):
+                 "Missing Yandex Cloud PostgreSQL credentials in environment variables"
+             )
+ 
+         POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}?sslmode={POSTGRES_SSLMODE}&sslrootcert={POSTGRES_SSLROOTCERT}"
+ 
+-        print(
++        logger.info(
+             f"[DB] Using Yandex Cloud PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}"
+         )
+         return POSTGRES_URL
+     else:
+         raise ValueError(f"Unknown MODE: {mode}. Expected 'dev' or 'prod'")
+diff --git a/front/src/miminet_auth.py b/front/src/miminet_auth.py
+index 00a418d..f30ece5 100644
+--- a/front/src/miminet_auth.py
++++ b/front/src/miminet_auth.py
+@@ -609,12 +609,11 @@ def vk_callback():
+             user_is_new = True
+ 
+         except SQLAlchemyError as e:
+             db.session.rollback()
+             error = str(e.__dict__["orig"])
+-            print(error)
+-            print("Can't add new user to the Database")
++            logger.error(f"Can't add new user to the Database: {error}")
+             flash(error, category="error")
+             return redirect(url_for("login_index"))
+ 
+         user = User.query.filter_by(vk_id=vk_id).first()
+ 
+@@ -623,12 +622,10 @@ def vk_callback():
+     refresh_token = create_refresh_token(identity=str(user.id))
+ 
+     response = redirect_next_url(fallback=url_for("home"))
+     issue_jwt_cookies(response, access_token, refresh_token)
+ 
+-    print(f"access_token: {access_token}; refresh_token: {refresh_token}")
+-
+     if user_is_new:
+         u = uuid.uuid4()
+         n = Network(
+             author_id=user.id,
+             network=make_example_net_switch_and_hub(),
+@@ -742,11 +739,11 @@ def insert_test_user(app):
+ 
+             db.session.add(test_user)
+             db.session.commit()
+         except Exception as e:
+             db.session.rollback()
+-            print(f"An error occurred while adding the test user: {e}")
++            logger.error(f"An error occurred while adding the test user: {e}")
+ 
+ 
+ def remove_test_user(app):
+     with app.app_context():
+         try:
+@@ -755,6 +752,6 @@ def remove_test_user(app):
+             if user_to_remove:
+                 db.session.delete(user_to_remove)
+                 db.session.commit()
+         except Exception as e:
+             db.session.rollback()
+-            print(f"An error occurred while removing the test user: {e}")
++            logger.error(f"An error occurred while removing the test user: {e}")
+diff --git a/front/src/miminet_config.py b/front/src/miminet_config.py
+index e75280b..b316ba0 100644
+--- a/front/src/miminet_config.py
++++ b/front/src/miminet_config.py
+@@ -1,19 +1,22 @@
++import logging
+ import os
+ import pathlib
+ from datetime import datetime
+ 
+ from PIL import Image
+ 
++logger = logging.getLogger(__name__)
++
+ SECRET_KEY_FILE = os.path.join(pathlib.Path(__file__).parent, "miminet_secret.conf")
+ SECRET_KEY = ""
+ 
+ if os.path.exists(SECRET_KEY_FILE):
+     with open(SECRET_KEY_FILE, "r") as file:
+         SECRET_KEY = file.read().rstrip()
+ else:
+-    print("There is no SECRET_KEY_FILE, generate random SECRET_KEY")
++    logger.warning("There is no SECRET_KEY_FILE, generate random SECRET_KEY")
+     SECRET_KEY = os.urandom(16).hex()
+ 
+ 
+ SQLITE_DATABASE_NAME = "miminet.db"
+ 
+diff --git a/front/src/miminet_model.py b/front/src/miminet_model.py
+index 72ad062..b1d0b59 100644
+--- a/front/src/miminet_model.py
++++ b/front/src/miminet_model.py
+@@ -1,5 +1,6 @@
++import logging
+ import os
+ from os import urandom
+ 
+ import psycopg2
+ from flask_login import UserMixin
+@@ -16,10 +17,12 @@ from sqlalchemy import (
+     inspect,
+     not_,
+ )
+ from werkzeug.security import generate_password_hash
+ 
++logger = logging.getLogger(__name__)
++
+ convention = {
+     "ix": "ix_%(column_0_label)s",
+     "uq": "uq_%(table_name)s_%(column_0_name)s",
+     "ck": "ck_%(table_name)s_%(constraint_name)s",
+     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+@@ -133,24 +136,26 @@ def ensure_db_exists(
+     if sslrootcert:
+         conn_params["sslrootcert"] = sslrootcert
+ 
+     try:
+         with psycopg2.connect(**conn_params) as conn:
+-            print(f"[OK] Successfully connected to database '{target_db}'")
++            logger.info(f"[OK] Successfully connected to database '{target_db}'")
+             return True
+     except OperationalError:
+         # If connection failed
+         if mode == "prod":
+-            print(f"[ERROR] Database '{target_db}' does not exist or unreachable.")
+-            print(
++            logger.error(
++                f"[ERROR] Database '{target_db}' does not exist or unreachable."
++            )
++            logger.error(
+                 "[HINT] In PROD mode (Yandex Cloud), you must create the database manually via Console!"
+             )
+             # In PROD we DO NOT try to create DB via postgres system db
+             raise
+ 
+     # 2. Only if mode == 'dev' and connection failed
+-    print(
++    logger.info(
+         f"[DEV] Target db '{target_db}' not found. Trying to create via 'postgres' db..."
+     )
+ 
+     sys_conn_params = conn_params.copy()
+     sys_conn_params["dbname"] = "postgres"  # Connect to system DB
+@@ -162,19 +167,19 @@ def ensure_db_exists(
+                 cur.execute(
+                     "SELECT 1 FROM pg_database WHERE datname = %s", (target_db,)
+                 )
+ 
+                 if not cur.fetchone():
+-                    print(f"[DEV] Creating database {target_db}...")
++                    logger.info(f"[DEV] Creating database {target_db}...")
+                     cur.execute(f"CREATE DATABASE {target_db}")
+                 else:
+-                    print(
++                    logger.warning(
+                         f"[DEV] Database {target_db} exists but connection failed previously. Check permissions."
+                     )
+         return True
+     except Exception as e:
+-        print(f"[ERROR] Failed to auto-create database in DEV mode: {e}")
++        logger.error(f"[ERROR] Failed to auto-create database in DEV mode: {e}")
+         raise
+ 
+ 
+ def init_db(app):
+     # Init DB
+@@ -233,16 +238,16 @@ def init_db(app):
+         # Logic for creating tables
+         inspector = inspect(db.engine)
+         tables_exist = inspector.has_table("user")
+ 
+         if not tables_exist:
+-            print(f"[{mode.upper()}] Tables not found. Creating schema...")
++            logger.info(f"[{mode.upper()}] Tables not found. Creating schema...")
+             db.create_all()
+ 
+             # Create test data only for DEV
+             if mode == "dev":
+-                print("[DEV] Creating test users...")
++                logger.info("[DEV] Creating test users...")
+                 users = []
+ 
+                 for user in users:
+                     u = User(
+                         email=user["email"],
+@@ -251,16 +256,16 @@ def init_db(app):
+                     )
+ 
+                     db.session.add(u)
+                     db.session.commit()
+         else:
+-            print(f"[{mode.upper()}] Schema exists.")
++            logger.info(f"[{mode.upper()}] Schema exists.")
+             # Only fix data if tables exist
+             try:
+                 # Some networks can be marked as non-emulated in the database, we should fix them.
+-                print("[!] Fix nonemulated networks...")
++                logger.info("[!] Fix nonemulated networks...")
+                 SimulateLog.query.filter(not_(SimulateLog.ready)).update(
+                     {"ready": True}
+                 )
+                 db.session.commit()
+             except Exception as e:
+-                print(f"[!] Error fixing nonemulated networks: {e}")
++                logger.error(f"[!] Error fixing nonemulated networks: {e}")
+diff --git a/front/src/tasks.py b/front/src/tasks.py
+index 24fbf1c..2c1ba14 100644
+--- a/front/src/tasks.py
++++ b/front/src/tasks.py
+@@ -39,11 +39,11 @@ def save_simulate_result(self, animation, pcaps):
+ 
+         pcap_dir = "static/pcaps/" + net.guid
+ 
+         if not os.path.exists(pcap_dir):
+             os.makedirs(pcap_dir)
+-            print("Created pcap dir", pcap_dir)
++            logging.info(f"Created pcap dir {pcap_dir}")
+         else:
+             shutil.rmtree(pcap_dir)
+             os.makedirs(pcap_dir)
+ 
+         for pcap in pcaps:
+-- 
+2.41.0.windows.1
+

@@ -1,0 +1,92 @@
+From 5a0c06c2ac17fb4dbbb4d0cfcb8f6d6c50f50455 Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:18:20 +0900
+Subject: [PATCH] fix(quiz): drop heavy relation fields from admin section form
+ (#543)
+
+SectionView rendered the questions and quiz_sessions relations as selects
+listing every question and quiz session of the section, so the edit form of
+a section that many users had taken was slow to load. These relations are
+managed elsewhere (questions in their own view, sessions by the quiz), so
+exclude them from the form.
+
+Local measurement, section with 5000 quiz sessions: edit form 800 ms /
+315 KiB / 5006 <option> before, 37 ms / 9 KiB / 4 <option> after. Saving the
+form no longer touches these relations at all (a submission without the
+quiz_sessions field used to unlink every session from the section).
+Adds browser-free test_admin_section_form.py (registered in
+front_coverage.yml).
+---
+ .github/workflows/front_coverage.yml   |  1 +
+ front/src/miminet_admin.py             |  4 ++++
+ front/tests/test_admin_section_form.py | 24 ++++++++++++++++++++++++
+ 3 files changed, 29 insertions(+)
+
+diff --git a/.github/workflows/front_coverage.yml b/.github/workflows/front_coverage.yml
+index b52f728..43a3fce 100644
+--- a/.github/workflows/front_coverage.yml
++++ b/.github/workflows/front_coverage.yml
+@@ -33,10 +33,11 @@ jobs:
+           # the browser-free set never silently changes shape.
+           files=(
+             test_get_logs.py
+             test_config_db.py
+             test_quiz_progress.py
++            test_admin_section_form.py
+             test_ai_generate.py
+             test_jwt_cookies.py
+             test_textbox_emulation.py
+           )
+           [ "${#files[@]}" -gt 0 ] || { echo "ERROR: empty browser-free file list" >&2; exit 1; }
+diff --git a/front/src/miminet_admin.py b/front/src/miminet_admin.py
+index 67f4de0..c0c3439 100644
+--- a/front/src/miminet_admin.py
++++ b/front/src/miminet_admin.py
+@@ -445,10 +445,14 @@ class SectionView(MiminetAdminModelView):
+     form_excluded_columns = [
+         "created_by_id",
+         "created_by_user",
+         "created_on",
+         "updated_on",
++        # Relation selects list every question/session of the section and
++        # make the form load very slowly once many users took the test.
++        "questions",
++        "quiz_sessions",
+     ]
+ 
+     # form_extra_fields = {
+     #     "is_exam": BooleanField(default=False),
+     #     # "results_available_from": DateTimeField(
+diff --git a/front/tests/test_admin_section_form.py b/front/tests/test_admin_section_form.py
+new file mode 100644
+index 0000000..015c9a1
+--- /dev/null
++++ b/front/tests/test_admin_section_form.py
+@@ -0,0 +1,24 @@
++"""Regression test for the slow admin section form (issue #543).
++
++The questions/quiz_sessions relation selects listed every question and quiz
++session of the section, so editing a section that many users had taken took
++seconds to render.
++"""
++
++from app import app as flask_app
++from miminet_admin import SectionView
++from miminet_model import db
++from quiz.entity.entity import Section
++
++
++def test_section_form_has_no_relation_selects():
++    with flask_app.app_context():
++        form_cls = SectionView(
++            Section, db.session, endpoint="t543_section"
++        ).get_create_form()
++
++    assert not hasattr(form_cls, "questions")
++    assert not hasattr(form_cls, "quiz_sessions")
++    # The fields the admin actually edits are still there.
++    assert hasattr(form_cls, "name")
++    assert hasattr(form_cls, "test")
+-- 
+2.41.0.windows.1
+

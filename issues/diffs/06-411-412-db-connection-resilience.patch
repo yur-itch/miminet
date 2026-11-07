@@ -1,0 +1,122 @@
+From b1192e84b22b7e46578f0b0dfdeaa9c50f00eae3 Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:21:09 +0900
+Subject: [PATCH] fix(front): recover dropped DB connections and bound connect
+ time (#411, #412)
+
+#411: requests failed with 'SSL SYSCALL error: EOF detected' when the server
+side (pgbouncer / managed PostgreSQL) had closed a pooled connection - the
+pool handed the dead connection out. Enable pool_pre_ping so such
+connections are replaced transparently, and pool_recycle=300 to retire idle
+ones early.
+
+#412: with the DB host unreachable a request hung for 130 s (the Linux TCP
+connect timeout) before the 500. Add connect_timeout=5 to both the dev and
+prod URIs; it is passed in the URI rather than connect_args so sqlite
+SQLALCHEMY_DATABASE_URI overrides used by tests keep working.
+
+Local check (PostgreSQL 18, server connections killed with
+pg_terminate_backend): before - first request after the drop answered 500
+with OperationalError; after - 200. connect_timeout=5 makes a connect to an
+unreachable host fail in ~3-5 s instead of hanging.
+---
+ front/src/app.py              | 12 ++++++++++--
+ front/tests/test_config_db.py | 10 ++++++++++
+ 2 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/front/src/app.py b/front/src/app.py
+index 735b5d9..e274d99 100644
+--- a/front/src/app.py
++++ b/front/src/app.py
+@@ -199,10 +199,13 @@ load_dotenv()
+ 
+ PUBLIC_CONFIG_KEYS = [
+     "EXTERNAL_BASE_URL",
+ ]
+ 
++# Fail fast instead of hanging ~130 s (OS TCP timeout) when the DB is unreachable.
++DB_CONNECT_TIMEOUT = 5
++
+ 
+ def get_database_uri(mode):
+     """
+     Выбирает URI базы данных в зависимости от режима работы.
+ 
+@@ -216,11 +219,11 @@ def get_database_uri(mode):
+         # Локальный PostgreSQL контейнер для разработки
+         POSTGRES_HOST = os.getenv("POSTGRES_HOST")
+         POSTGRES_USER = os.getenv("POSTGRES_DEFAULT_USER")
+         POSTGRES_PASSWORD = os.getenv("POSTGRES_DEFAULT_PASSWORD")
+         POSTGRES_DB_NAME = os.getenv("POSTGRES_DATABASE_NAME")
+-        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB_NAME}"
++        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB_NAME}?connect_timeout={DB_CONNECT_TIMEOUT}"
+ 
+         print(f"[DB] Using local PostgreSQL: {POSTGRES_HOST}/{POSTGRES_DB_NAME}")
+         return POSTGRES_URL
+     elif mode == "prod":
+         # Yandex Cloud PostgreSQL для продакшена
+@@ -237,11 +240,11 @@ def get_database_uri(mode):
+         if not all([POSTGRES_HOST, POSTGRES_USER, POSTGRES_PASSWORD]):
+             raise ValueError(
+                 "Missing Yandex Cloud PostgreSQL credentials in environment variables"
+             )
+ 
+-        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}?sslmode={POSTGRES_SSLMODE}&sslrootcert={POSTGRES_SSLROOTCERT}"
++        POSTGRES_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}?sslmode={POSTGRES_SSLMODE}&sslrootcert={POSTGRES_SSLROOTCERT}&connect_timeout={DB_CONNECT_TIMEOUT}"
+ 
+         print(
+             f"[DB] Using Yandex Cloud PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB_NAME}"
+         )
+         return POSTGRES_URL
+@@ -254,10 +257,15 @@ def get_database_uri(mode):
+ # MODE or touching real credentials).
+ app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("SQLALCHEMY_DATABASE_URI") or (
+     get_database_uri(MODE)
+ )
+ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = True
++# Replace pooled connections closed by pgbouncer/PG instead of failing with 500.
++app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
++    "pool_pre_ping": True,
++    "pool_recycle": 300,
++}
+ app.config["SECRET_KEY"] = SECRET_KEY
+ app.config["SESSION_COOKIE_NAME"] = "mimi_session"
+ 
+ # Init Databases
+ db.init_app(app)
+diff --git a/front/tests/test_config_db.py b/front/tests/test_config_db.py
+index 142ec3d..5ca6005 100644
+--- a/front/tests/test_config_db.py
++++ b/front/tests/test_config_db.py
+@@ -15,18 +15,28 @@ class TestConfigDB:
+         """Verify URI format for Development environment."""
+         uri = get_database_uri("dev")
+         assert "postgresql+psycopg2://" in uri
+         assert "@localhost/" in uri
+         assert "sslmode" not in uri
++        assert uri.endswith("/miminet_dev?connect_timeout=5")
+ 
+     def test_get_database_uri_prod(self, mock_env_prod):
+         """Verify URI format and SSL parameters for Production environment."""
+         uri = get_database_uri("prod")
+         assert "postgresql+psycopg2://" in uri
+         assert "rc1a-test" in uri
+         assert "sslmode=verify-full" in uri
+         assert "sslrootcert=/tmp/root.crt" in uri
++        assert "&connect_timeout=5" in uri
++
++    def test_engine_recovers_dropped_connections(self):
++        """Pooled connections closed by the server must be replaced, not reused (#411)."""
++        from app import app as flask_app
++
++        options = flask_app.config["SQLALCHEMY_ENGINE_OPTIONS"]
++        assert options["pool_pre_ping"] is True
++        assert options["pool_recycle"] > 0
+ 
+     def test_get_database_uri_prod_missing_creds(self, mock_env_prod, monkeypatch):
+         """Verify Fail Fast behavior when credentials are missing in Prod."""
+         monkeypatch.delenv("YANDEX_POSTGRES_PASSWORD")
+         with pytest.raises(
+-- 
+2.41.0.windows.1
+

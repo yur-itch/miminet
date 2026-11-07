@@ -1,0 +1,58 @@
+From 302558fc0a87dbec8703b9bea4699fccab07dbcb Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:22:09 +0900
+Subject: [PATCH] fix(front): declare Russian as the document language (#531)
+
+base.html, quiz/networkBase.html and auth/password_recoevry.html declared
+lang="en" on a fully Russian site (SEO-04 in docs/REQUIREMENTS/SEO.md).
+Besides confusing search engines (Yandex in particular), it makes browsers
+offer or apply automatic translation to Russian, and in-page translation
+has already broken quiz grading once (#537).
+---
+ front/src/templates/auth/password_recoevry.html | 2 +-
+ front/src/templates/base.html                   | 2 +-
+ front/src/templates/quiz/networkBase.html       | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/front/src/templates/auth/password_recoevry.html b/front/src/templates/auth/password_recoevry.html
+index 566549b..3996ac1 100644
+--- a/front/src/templates/auth/password_recoevry.html
++++ b/front/src/templates/auth/password_recoevry.html
+@@ -1,7 +1,7 @@
+ <!DOCTYPE html>
+-<html lang="en">
++<html lang="ru">
+ <head>
+     <meta charset="UTF-8">
+     <title>Title</title>
+ </head>
+ <body>
+diff --git a/front/src/templates/base.html b/front/src/templates/base.html
+index 73b9b3b..f5436e1 100644
+--- a/front/src/templates/base.html
++++ b/front/src/templates/base.html
+@@ -1,7 +1,7 @@
+ <!DOCTYPE html>
+-<html lang="en">
++<html lang="ru">
+ <head>
+ 
+     <!-- Google Tag Manager -->
+     <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+ new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+diff --git a/front/src/templates/quiz/networkBase.html b/front/src/templates/quiz/networkBase.html
+index 6e3c2c6..7e6e9f9 100644
+--- a/front/src/templates/quiz/networkBase.html
++++ b/front/src/templates/quiz/networkBase.html
+@@ -1,7 +1,7 @@
+ <!DOCTYPE html>
+-<html lang="en">
++<html lang="ru">
+ <head>
+ 
+     <!-- Google Tag Manager -->
+     <script>(function (w, d, s, l, i) {
+         w[l] = w[l] || [];
+-- 
+2.41.0.windows.1
+

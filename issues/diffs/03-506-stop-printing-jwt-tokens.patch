@@ -1,0 +1,32 @@
+From 013cfcaeec18b2b1cac249821a8dedf77096e462 Mon Sep 17 00:00:00 2001
+From: yurich <urvancevurij24@gmail.com>
+Date: Fri, 23 Oct 2026 05:07:03 +0900
+Subject: [PATCH] fix(front): stop printing JWT tokens on VK login (#506)
+
+vk_callback printed the freshly issued access and refresh tokens to stdout,
+so every VK login leaked valid session tokens into the container logs.
+Remove the print; the tokens are only set as cookies.
+---
+ front/src/miminet_auth.py | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/front/src/miminet_auth.py b/front/src/miminet_auth.py
+index 00a418d..1523bcf 100644
+--- a/front/src/miminet_auth.py
++++ b/front/src/miminet_auth.py
+@@ -623,12 +623,10 @@ def vk_callback():
+     refresh_token = create_refresh_token(identity=str(user.id))
+ 
+     response = redirect_next_url(fallback=url_for("home"))
+     issue_jwt_cookies(response, access_token, refresh_token)
+ 
+-    print(f"access_token: {access_token}; refresh_token: {refresh_token}")
+-
+     if user_is_new:
+         u = uuid.uuid4()
+         n = Network(
+             author_id=user.id,
+             network=make_example_net_switch_and_hub(),
+-- 
+2.41.0.windows.1
+
